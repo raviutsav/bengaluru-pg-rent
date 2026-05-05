@@ -93,10 +93,11 @@ const CustomSelect = ({ name, options, value: externalValue, onChange, placehold
                 className="custom-select-option"
                 onClick={() => handleSelect(opt.value)}
                 style={{
-                  padding: '0.75rem 1rem', cursor: 'pointer',
+                  padding: '0.3rem 0.5rem', cursor: 'pointer',
                   fontWeight: currentVal === opt.value ? '600' : '400',
                   color: currentVal === opt.value ? 'var(--primary-accent)' : 'inherit',
-                  transition: 'background-color 0.2s'
+                  transition: 'background-color 0.2s',
+                  fontSize: '0.8rem'
                 }}
                 onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f1f5f9'}
                 onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
@@ -398,7 +399,7 @@ export default function App() {
             />
           </div>
 
-          <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1.5rem' }}>
+          <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.25rem' }}>
             <button 
               className="btn-primary" 
               style={{ background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border-color)', boxShadow: 'none' }}
@@ -434,6 +435,10 @@ export default function App() {
           
           <MarkerClusterGroup
             chunkedLoading
+            maxClusterRadius={45}
+            disableClusteringAtZoom={16}
+            spiderfyOnMaxZoom={true}
+            showCoverageOnHover={false}
             iconCreateFunction={(cluster) => {
               const count = cluster.getChildCount();
               return L.divIcon({
@@ -477,20 +482,63 @@ export default function App() {
               <span className="badge">{selectedPg.pg_type}</span>
               {selectedPg.room_types && selectedPg.room_types.map(rt => <span key={rt} className="badge" style={{background: 'rgba(16, 185, 129, 0.1)', color: 'var(--secondary-accent)'}}>{rt}</span>)}
             </div>
+
+            {selectedPg.amenities && selectedPg.amenities.length > 0 && (
+              <div style={{ marginTop: '1rem' }}>
+                <h4 style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Amenities</h4>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                  {selectedPg.amenities.map(am => (
+                    <span key={am} className="badge glass" style={{ background: 'white', color: 'var(--text-primary)', border: '1px solid var(--border-color)', margin: 0, padding: '0.2rem 0.6rem', fontSize: '0.75rem', textTransform: 'capitalize' }}>
+                      {am.replace('_', ' ')}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {selectedPg.food && selectedPg.food.provided && (
+              <div style={{ marginTop: '1rem' }}>
+                <h4 style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Food Services</h4>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                  {selectedPg.food.veg && <span className="badge glass" style={{ background: '#dcfce7', color: '#166534', border: '1px solid #bbf7d0', margin: 0, padding: '0.2rem 0.6rem', fontSize: '0.75rem' }}>Veg</span>}
+                  {selectedPg.food.nonVeg && <span className="badge glass" style={{ background: '#fee2e2', color: '#991b1b', border: '1px solid #fecaca', margin: 0, padding: '0.2rem 0.6rem', fontSize: '0.75rem' }}>Non-Veg</span>}
+                  {selectedPg.food.breakfast && <span className="badge glass" style={{ background: '#fef3c7', color: '#92400e', border: '1px solid #fde68a', margin: 0, padding: '0.2rem 0.6rem', fontSize: '0.75rem' }}>Breakfast</span>}
+                  {selectedPg.food.lunch && <span className="badge glass" style={{ background: '#fef3c7', color: '#92400e', border: '1px solid #fde68a', margin: 0, padding: '0.2rem 0.6rem', fontSize: '0.75rem' }}>Lunch</span>}
+                  {selectedPg.food.dinner && <span className="badge glass" style={{ background: '#fef3c7', color: '#92400e', border: '1px solid #fde68a', margin: 0, padding: '0.2rem 0.6rem', fontSize: '0.75rem' }}>Dinner</span>}
+                </div>
+              </div>
+            )}
+
+            {selectedPg.contact && (selectedPg.contact.phone || selectedPg.contact.email) && (
+              <div style={{ marginTop: '1rem', padding: '0.75rem', background: '#f8fafc', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}>
+                <h4 style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Contact</h4>
+                {selectedPg.contact.phone && <div style={{ fontSize: '0.9rem', marginBottom: '0.25rem' }}><strong style={{color: 'var(--text-primary)'}}>Phone:</strong> {selectedPg.contact.phone}</div>}
+                {selectedPg.contact.email && <div style={{ fontSize: '0.9rem' }}><strong style={{color: 'var(--text-primary)'}}>Email:</strong> {selectedPg.contact.email}</div>}
+              </div>
+            )}
             
             <div style={{ marginTop: '1.5rem' }}>
               <h3>Rent Details</h3>
               {selectedPg.rents && selectedPg.rents.length > 0 ? (
                 selectedPg.rents.map(r => (
-                  <div key={r.id} style={{ padding: '1rem', background: 'var(--card-bg)', borderRadius: 'var(--radius-md)', marginBottom: '0.5rem' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <strong>{r.room_type}</strong>
-                      <span style={{ display: 'flex', alignItems: 'center', color: 'var(--secondary-accent)' }}><IndianRupee size={16}/> {r.monthly_rent}/mo</span>
+                  <div key={r.id} style={{ padding: '1rem', background: 'var(--card-bg)', borderRadius: 'var(--radius-md)', marginBottom: '0.75rem', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-sm)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                      <strong style={{ fontSize: '1.1rem', textTransform: 'capitalize' }}>{r.room_type}</strong>
+                      <span style={{ display: 'flex', alignItems: 'center', color: 'var(--secondary-accent)', fontWeight: 600, fontSize: '1.1rem' }}><IndianRupee size={16}/> {r.monthly_rent}/mo</span>
                     </div>
-                    <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginTop: '0.5rem', display: 'flex', justifyContent: 'space-between' }}>
-                      <span>Deposit: ₹{r.deposit}</span>
-                      <span style={{ display: 'flex', alignItems: 'center' }}><Star size={14} color="#fbbf24" style={{marginRight:'0.25rem'}}/> {r.rating}</span>
+                    
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
+                      <div><strong style={{color: 'var(--text-primary)'}}>Deposit:</strong> ₹{r.deposit}</div>
+                      <div><strong style={{color: 'var(--text-primary)'}}>Refundable:</strong> ₹{r.refundable_deposit || 0}</div>
+                      <div><strong style={{color: 'var(--text-primary)'}}>Notice:</strong> {r.notice_period_days || 0} days</div>
+                      <div style={{ display: 'flex', alignItems: 'center' }}><strong style={{color: 'var(--text-primary)', marginRight: '0.25rem'}}>Rating:</strong> <Star size={14} color="#fbbf24" style={{marginRight:'0.15rem'}}/> {r.rating}</div>
                     </div>
+                    
+                    {r.comment && (
+                      <div style={{ marginTop: '0.5rem', paddingTop: '0.5rem', borderTop: '1px solid var(--border-color)', fontSize: '0.85rem', color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+                        "{r.comment}"
+                      </div>
+                    )}
                   </div>
                 ))
               ) : (
