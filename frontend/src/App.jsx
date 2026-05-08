@@ -1,9 +1,7 @@
-import { useState, useEffect, useMemo } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, useMapEvents } from 'react-leaflet';
-import MarkerClusterGroup from 'react-leaflet-cluster';
-import { Search, Filter, X, Plus, Home, MapPin, IndianRupee, Star } from 'lucide-react';
-import L from 'leaflet';
-import Fuse from 'fuse.js';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { GoogleMap, useJsApiLoader, OverlayViewF, MarkerF, TransitLayer, MarkerClustererF } from '@react-google-maps/api';
+import usePlacesAutocomplete, { getGeocode, getLatLng } from 'use-places-autocomplete';
+import { Search, Filter, X, Plus, Home, MapPin, IndianRupee, Star, Train, Share2 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 import './index.css';
 
@@ -11,15 +9,10 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-// Fix for default marker icons in Leaflet
-delete L.Icon.Default.prototype._getIconUrl;
-L.Icon.Default.mergeOptions({
-  iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png',
-  iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png',
-  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
-});
+const libraries = ['places'];
+const mapContainerStyle = { height: '100%', width: '100%' };
 
-const defaultCenter = [12.9716, 77.5946]; // Bangalore
+const defaultCenter = { lat: 12.9716, lng: 77.5946 }; // Bangalore
 
 // Mock Data for initial PGs
 const mockPgs = [
@@ -39,15 +32,6 @@ const mockPgs = [
     ]
   }
 ];
-
-function MapInteraction({ onMapClick }) {
-  useMapEvents({
-    click(e) {
-      onMapClick(e.latlng);
-    },
-  });
-  return null;
-}
 
 const CustomSelect = ({ name, options, value: externalValue, onChange, placeholder = "Select...", required }) => {
   const [isOpen, setIsOpen] = useState(false);
@@ -83,7 +67,7 @@ const CustomSelect = ({ name, options, value: externalValue, onChange, placehold
             className="custom-select-dropdown" 
             style={{ 
               position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, zIndex: 1001, 
-              maxHeight: '200px', overflowY: 'auto', background: '#fff', 
+              maxHeight: '200px', overflowY: 'auto', background: 'var(--card-bg)', 
               border: '1px solid var(--border-color)', borderRadius: '0.5rem', boxShadow: 'var(--shadow-lg)'
             }}
           >
@@ -99,7 +83,7 @@ const CustomSelect = ({ name, options, value: externalValue, onChange, placehold
                   transition: 'background-color 0.2s',
                   fontSize: '0.8rem'
                 }}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f1f5f9'}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-color)'}
                 onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
               >
                 {opt.label}
@@ -114,7 +98,6 @@ const CustomSelect = ({ name, options, value: externalValue, onChange, placehold
 
 export default function App() {
   const [pgs, setPgs] = useState([]);
-  const [searchQuery, setSearchQuery] = useState('');
   const [showFilters, setShowFilters] = useState(false);
   const [draftFilters, setDraftFilters] = useState({ pg_type: '', room_type: '' });
   const [appliedFilters, setAppliedFilters] = useState({ pg_type: '', room_type: '' });
@@ -123,6 +106,10 @@ export default function App() {
   const [addingPgLocation, setAddingPgLocation] = useState(null);
   const [addingRentForPg, setAddingRentForPg] = useState(null);
   const [showDropdown, setShowDropdown] = useState(false);
+  const [searchMarker, setSearchMarker] = useState(null);
+  const [showTransit, setShowTransit] = useState(false);
+  const [isAddingGmapsLink, setIsAddingGmapsLink] = useState(false);
+  const [showSharePopup, setShowSharePopup] = useState(false);
 
   useEffect(() => {
     const fetchPgs = async () => {
@@ -140,19 +127,132 @@ export default function App() {
     fetchPgs();
   }, []);
 
-  const fuse = useMemo(() => {
-    return new Fuse(pgs, {
-      keys: ['name', 'address'],
-      threshold: 0.4,
-    });
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const pgId = urlParams.get('pg');
+    if (pgId && pgs.length > 0) {
+      const pg = pgs.find(p => p.id.toString() === pgId);
+      if (pg) {
+        handleMarkerClick(pg);
+      }
+    }
   }, [pgs]);
 
-  const searchResults = useMemo(() => {
-    if (!searchQuery) return pgs;
-    return fuse.search(searchQuery).map(result => result.item);
-  }, [searchQuery, pgs, fuse]);
+  const { isLoaded } = useJsApiLoader({
+    id: 'google-map-script',
+    googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY,
+    libraries,
+  });
 
-  const filteredPgs = searchResults.filter(pg => {
+  const [map, setMap] = useState(null);
+  const mapRef = useRef(null);
+  const mapOptions = useMemo(() => ({
+    disableDefaultUI: true,
+    zoomControl: true,
+    styles: [
+      {
+        featureType: "poi",
+        stylers: [{ visibility: "off" }]
+      },
+      {
+        featureType: "poi",
+        elementType: "labels",
+        stylers: [{ visibility: "off" }]
+      },
+      {
+        featureType: "landscape.man_made",
+        elementType: "geometry",
+        stylers: [{ visibility: "off" }]
+      },
+      {
+        featureType: "administrative",
+        elementType: "labels",
+        stylers: [{ visibility: "off" }]
+      },
+      {
+        featureType: "transit.line.rail",
+        stylers: [{ visibility: "off" }]
+      },
+      {
+        featureType: "transit.station.rail",
+        stylers: [{ visibility: "off" }]
+      },
+      {
+        featureType: "transit.line.metro",
+        elementType: "geometry.fill",
+        stylers: [{ visibility: "on" }]
+      },
+      {
+        featureType: "transit.line.metro",
+        elementType: "geometry.stroke",
+        stylers: [{ visibility: "off" }]
+      },
+      {
+        featureType: "transit.station",
+        elementType: "labels.icon",
+        stylers: [{ visibility: "on" }]
+      }
+    ]
+  }), []);
+
+  const onLoad = useCallback(function callback(mapInstance) {
+    setMap(mapInstance);
+    mapRef.current = mapInstance;
+  }, []);
+
+  const onUnmount = useCallback(function callback(mapInstance) {
+    setMap(null);
+    mapRef.current = null;
+  }, []);
+
+  const {
+    ready,
+    value: searchValue,
+    suggestions: { status, data },
+    setValue: setSearchValue,
+    clearSuggestions,
+    init,
+  } = usePlacesAutocomplete({
+    initOnMount: false,
+    requestOptions: {
+      componentRestrictions: { country: "in" },
+      bounds: {
+        north: 13.20,
+        south: 12.75,
+        east: 77.85,
+        west: 77.35,
+      },
+      strictBounds: true,
+      types: ['geocode', 'establishment'],
+    },
+    debounce: 800,
+  });
+
+  useEffect(() => {
+    if (isLoaded) {
+      init();
+    }
+  }, [isLoaded, init]);
+
+  const handleSelectPlace = async (address) => {
+    setSearchValue(address, false);
+    clearSuggestions();
+    setShowDropdown(false);
+
+    try {
+      const results = await getGeocode({ address });
+      const { lat, lng } = await getLatLng(results[0]);
+      setSearchMarker({ lat, lng });
+      if (mapRef.current) {
+        mapRef.current.panTo({ lat, lng });
+        mapRef.current.setZoom(15);
+      }
+    } catch (error) {
+      console.error("Error: ", error);
+    }
+  };
+
+  const filteredPgs = pgs.filter(pg => {
     if (appliedFilters.pg_type) {
       const typeMatches = pg.pg_type && pg.pg_type.toLowerCase().trim() === appliedFilters.pg_type.toLowerCase().trim();
       if (!typeMatches) return false;
@@ -164,7 +264,6 @@ export default function App() {
       const hasRentMatch = pg.pg_rent && pg.pg_rent.some(r => r.room_type && r.room_type.toLowerCase().trim() === rtLower);
       const hasLocalRentMatch = pg.rents && pg.rents.some(r => r.room_type && r.room_type.toLowerCase().trim() === rtLower);
       
-      // If the PG has no rent data entered yet, fall back to checking its general room_types array
       const hasAnyRentData = (pg.pg_rent && pg.pg_rent.length > 0) || (pg.rents && pg.rents.length > 0);
       let hasRoomTypeMatch = false;
       
@@ -182,6 +281,7 @@ export default function App() {
     // Only show add PG form if not clicking a marker
     setAddingPgLocation(latlng);
     setSelectedPg(null);
+    setSearchMarker(null);
   };
 
   const hasActiveFilters = appliedFilters.pg_type !== '' || appliedFilters.room_type !== '';
@@ -216,12 +316,8 @@ export default function App() {
     const localRents = pg.rents || [];
     const activeRents = [...backendRents, ...localRents];
     
-    let htmlContent = `<div class="price-marker-multi" style="background-color: #64748b; --marker-bg: #64748b;">
-        <div class="price-row" style="justify-content: center;">
-          <span>NA</span>
-        </div>
-      </div>`;
-    let iconHeight = 34;
+    let markerColor = '#64748b';
+    let lines = [{ sharing: '-', price: 'NA' }];
     
     if (activeRents.length > 0) {
       // Calculate overall average rating
@@ -232,7 +328,6 @@ export default function App() {
       }
       
       // Map rating to color (red to green spectrum)
-      let markerColor = '#64748b'; // default slate gray for NA rating
       if (avgRating > 0) {
         // Map rating 1-5 to hue 0-120 (0 = Red, 120 = Green)
         const hue = Math.max(0, Math.min(120, (avgRating - 1) * 30));
@@ -257,30 +352,64 @@ export default function App() {
         'quadruple': '4'
       };
       
-      const rows = Object.entries(rentByRoom).map(([type, data]) => {
-        const avgRent = Math.round(data.sum / data.count);
+      lines = Object.entries(rentByRoom).map(([type, data]) => {
+        const avgRent = data.sum / data.count;
         const label = typeMapping[type] || type.charAt(0).toUpperCase();
-        return `<div class="price-row">
-                  <span class="room-type-num">${label}</span>
-                  <span>₹${(avgRent/1000).toFixed(1)}k</span>
-                </div>`;
-      }).join('');
-      
-      htmlContent = `<div class="price-marker-multi" style="background-color: ${markerColor}; --marker-bg: ${markerColor};">
-        ${rows}
-      </div>`;
-      
-      iconHeight = 10 + Object.keys(rentByRoom).length * 24;
+        return {
+          sharing: label,
+          price: `₹${(avgRent/1000).toFixed(1)}k`
+        };
+      });
     }
 
-    return L.divIcon({
-      className: 'custom-price-icon',
-      html: htmlContent,
-      iconSize: [80, iconHeight],
-      iconAnchor: [40, iconHeight + 5]
-    });
-  };
+    const fontSizePrice = 13;
+    const fontSizeSharing = 11;
+    const rowHeight = 24;
+    const paddingY = 6;
+    const paddingX = 10;
+    const circleRadius = 10;
+    const gap = 8;
+    
+    const maxPriceChars = Math.max(...lines.map(l => l.price.length));
+    const priceTextWidth = maxPriceChars * 8.5;
+    const width = Math.max(90, paddingX + (circleRadius * 2) + gap + priceTextWidth + paddingX); 
+    const rectHeight = lines.length * rowHeight + paddingY * 2;
+    const height = rectHeight + 8; // pointer triangle height
+    const centerX = width / 2;
 
+    const rowElements = lines.map((line, index) => {
+      const yCenter = paddingY + (index * rowHeight) + (rowHeight / 2);
+      const circleX = paddingX + circleRadius;
+      const textX = paddingX + (circleRadius * 2) + gap;
+      
+      return `<g>
+        <circle cx="${circleX}" cy="${yCenter}" r="${circleRadius}" fill="rgba(255,255,255,0.25)"/>
+        <text x="${circleX}" y="${yCenter + 1}" dominant-baseline="central" text-anchor="middle" fill="white" font-family="sans-serif" font-size="${fontSizeSharing}px" font-weight="bold">${line.sharing}</text>
+        <text x="${textX}" y="${yCenter + 1}" dominant-baseline="central" fill="white" font-family="sans-serif" font-size="${fontSizePrice}px" font-weight="bold">${line.price}</text>
+      </g>`;
+    }).join('');
+
+    const r = 8;
+    const path = `M ${r} 1 
+                  L ${width - r} 1 
+                  A ${r} ${r} 0 0 1 ${width - 1} ${r + 1} 
+                  L ${width - 1} ${rectHeight - r - 1} 
+                  A ${r} ${r} 0 0 1 ${width - r - 1} ${rectHeight - 1} 
+                  L ${centerX + 8} ${rectHeight - 1} 
+                  L ${centerX} ${height - 1} 
+                  L ${centerX - 8} ${rectHeight - 1} 
+                  L ${r + 1} ${rectHeight - 1} 
+                  A ${r} ${r} 0 0 1 1 ${rectHeight - r - 1} 
+                  L 1 ${r + 1} 
+                  A ${r} ${r} 0 0 1 ${r + 1} 1 Z`.replace(/\n\s+/g, ' ');
+
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+      <path d="${path}" fill="${markerColor}" stroke="white" stroke-width="2"/>
+      ${rowElements}
+    </svg>`;
+    
+    return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+  };
   return (
     <div className="app-container">
       {/* Header overlay with Search & Filter */}
@@ -289,46 +418,56 @@ export default function App() {
           <Search size={20} className="text-secondary" color="var(--text-secondary)" />
           <input 
             type="text" 
-            placeholder="Search PGs in Bangalore..." 
+            placeholder="Search places in Bangalore..." 
             className="search-input"
-            value={searchQuery}
+            value={searchValue}
             onChange={(e) => {
-              setSearchQuery(e.target.value);
+              setSearchValue(e.target.value);
               setShowDropdown(true);
             }}
+            disabled={!ready}
             onFocus={() => setShowDropdown(true)}
             onBlur={() => setTimeout(() => setShowDropdown(false), 200)}
           />
           
-          {showDropdown && searchQuery && (
-            <div className="search-dropdown glass" style={{ position: 'absolute', top: 'calc(100% + 0.75rem)', left: 0, right: 0, background: 'white', borderRadius: 'var(--radius-md)', boxShadow: 'var(--shadow-lg)', overflow: 'hidden', zIndex: 2000, border: '1px solid var(--border-color)' }}>
-              {searchResults.slice(0, 5).map(pg => (
+          {showDropdown && status === "OK" && (
+            <div className="search-dropdown glass" style={{ position: 'absolute', top: 'calc(100% + 0.75rem)', left: 0, right: 0, background: 'var(--card-bg)', borderRadius: 'var(--radius-md)', boxShadow: 'var(--shadow-lg)', overflow: 'hidden', zIndex: 2000, border: '1px solid var(--border-color)' }}>
+              {data
+                .filter(item => 
+                  item.description.toLowerCase().includes('bangalore') || 
+                  item.description.toLowerCase().includes('bengaluru')
+                )
+                .map(({ place_id, description }) => (
                 <div 
-                  key={pg.id} 
+                  key={place_id} 
                   style={{ padding: '0.75rem 1rem', cursor: 'pointer', borderBottom: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', textAlign: 'left' }}
-                  onClick={() => {
-                    setSearchQuery(pg.name);
-                    setShowDropdown(false);
-                    handleMarkerClick(pg);
-                  }}
-                  onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f8fafc'}
+                  onClick={() => handleSelectPlace(description)}
+                  onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-color)'}
                   onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
                 >
-                  <strong style={{ color: 'var(--text-primary)', fontSize: '0.9rem', marginBottom: '0.2rem' }}>{pg.name}</strong>
-                  <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{pg.address}</span>
+                  <strong style={{ color: 'var(--text-primary)', fontSize: '0.9rem' }}>{description}</strong>
                 </div>
               ))}
-              {searchResults.length === 0 && (
-                <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--text-secondary)' }}>No matches found</div>
-              )}
             </div>
           )}
         </div>
         <button 
           className="icon-btn" 
           style={{ 
+            backgroundColor: showTransit ? 'var(--secondary-accent)' : 'var(--card-bg)', 
+            color: showTransit ? 'white' : 'var(--text-primary)', 
+            borderColor: showTransit ? 'var(--secondary-accent)' : 'var(--border-color)' 
+          }}
+          onClick={() => setShowTransit(!showTransit)}
+          title="Toggle Bangalore Metro Lines"
+        >
+          <Train size={20} />
+        </button>
+        <button 
+          className="icon-btn" 
+          style={{ 
             position: 'relative', 
-            backgroundColor: hasActiveFilters ? 'var(--primary-accent)' : 'white', 
+            backgroundColor: hasActiveFilters ? 'var(--primary-accent)' : 'var(--card-bg)', 
             color: hasActiveFilters ? 'white' : 'var(--text-primary)', 
             borderColor: hasActiveFilters ? 'var(--primary-accent)' : 'var(--border-color)' 
           }}
@@ -345,13 +484,13 @@ export default function App() {
       {hasActiveFilters && (
         <div style={{ position: 'absolute', top: '6.25rem', left: '50%', transform: 'translateX(-50%)', zIndex: 999, display: 'flex', gap: '0.5rem', width: '90%', maxWidth: '650px', flexWrap: 'wrap' }}>
           {appliedFilters.pg_type && (
-            <div className="badge glass" style={{ margin: 0, padding: '0.4rem 0.8rem', display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', background: 'white', color: 'var(--text-primary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-full)' }} onClick={() => { setAppliedFilters({...appliedFilters, pg_type: ''}); setDraftFilters({...draftFilters, pg_type: ''}); }}>
+            <div className="badge glass" style={{ margin: 0, padding: '0.4rem 0.8rem', display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', background: 'var(--card-bg)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-full)' }} onClick={() => { setAppliedFilters({...appliedFilters, pg_type: ''}); setDraftFilters({...draftFilters, pg_type: ''}); }}>
               <span style={{ fontWeight: 400 }}>Type:</span> <strong style={{ textTransform: 'capitalize' }}>{appliedFilters.pg_type}</strong>
               <X size={14} style={{ marginLeft: '0.2rem', color: 'var(--text-secondary)' }} />
             </div>
           )}
           {appliedFilters.room_type && (
-            <div className="badge glass" style={{ margin: 0, padding: '0.4rem 0.8rem', display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', background: 'white', color: 'var(--text-primary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-full)' }} onClick={() => { setAppliedFilters({...appliedFilters, room_type: ''}); setDraftFilters({...draftFilters, room_type: ''}); }}>
+            <div className="badge glass" style={{ margin: 0, padding: '0.4rem 0.8rem', display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', background: 'var(--card-bg)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-full)' }} onClick={() => { setAppliedFilters({...appliedFilters, room_type: ''}); setDraftFilters({...draftFilters, room_type: ''}); }}>
               <span style={{ fontWeight: 400 }}>Room:</span> <strong style={{ textTransform: 'capitalize' }}>{appliedFilters.room_type}</strong>
               <X size={14} style={{ marginLeft: '0.2rem', color: 'var(--text-secondary)' }} />
             </div>
@@ -426,57 +565,243 @@ export default function App() {
 
       {/* Map */}
       <div className="map-container">
-        <MapContainer center={defaultCenter} zoom={13} style={{ height: '100%', width: '100%' }} zoomControl={false}>
-          <TileLayer
-            url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
-          />
-          <MapInteraction onMapClick={handleMapClick} />
-          
-          <MarkerClusterGroup
-            chunkedLoading
-            maxClusterRadius={45}
-            disableClusteringAtZoom={16}
-            spiderfyOnMaxZoom={true}
-            showCoverageOnHover={false}
-            iconCreateFunction={(cluster) => {
-              const count = cluster.getChildCount();
-              return L.divIcon({
-                html: `<div class="cluster-marker"><span>${count} PGs</span></div>`,
-                className: 'custom-cluster-icon',
-                iconSize: [80, 40]
-              });
-            }}
+        {isLoaded ? (
+          <GoogleMap
+            mapContainerStyle={mapContainerStyle}
+            center={defaultCenter}
+            zoom={13}
+            onLoad={onLoad}
+            onUnmount={onUnmount}
+            onClick={(e) => handleMapClick({ lat: e.latLng.lat(), lng: e.latLng.lng() })}
+            options={mapOptions}
           >
-            {filteredPgs.map(pg => (
-              <Marker 
-                key={pg.id} 
-                position={[pg.latitude, pg.longitude]}
-                icon={getMarkerIcon(pg)}
-                eventHandlers={{
-                  click: () => handleMarkerClick(pg)
+            <MarkerClustererF
+              calculator={(markers) => ({
+                text: `${markers.length} PGs`,
+                index: 1,
+              })}
+              options={{
+                gridSize: 60,
+                minimumClusterSize: 2,
+                styles: [
+                  {
+                    url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
+                      <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+                        <circle cx="32" cy="32" r="28" fill="#4f46e5" stroke="white" stroke-width="3" />
+                        <circle cx="32" cy="32" r="30" fill="none" stroke="#4f46e5" stroke-width="1" opacity="0.3" />
+                      </svg>
+                    `),
+                    height: 64,
+                    width: 64,
+                    textColor: 'white',
+                    textSize: 11,
+                    fontWeight: 'bold',
+                  }
+                ]
+              }}
+            >
+              {(clusterer) => (
+                <>
+                  {filteredPgs.map(pg => {
+                    const iconUrl = getMarkerIcon(pg);
+                    return (
+                      <MarkerF
+                        key={pg.id}
+                        position={{ lat: pg.latitude, lng: pg.longitude }}
+                        icon={{ url: iconUrl }}
+                        onClick={() => handleMarkerClick(pg)}
+                        clusterer={clusterer}
+                      />
+                    );
+                  })}
+                </>
+              )}
+            </MarkerClustererF>
+            
+            {addingPgLocation && (
+              <MarkerF position={addingPgLocation} />
+            )}
+
+            {searchMarker && (
+              <MarkerF 
+                position={searchMarker}
+                icon={{
+                  url: 'https://maps.google.com/mapfiles/ms/icons/blue-dot.png'
                 }}
-              >
-              </Marker>
-            ))}
-          </MarkerClusterGroup>
-        </MapContainer>
+              />
+            )}
+
+            {showTransit && <TransitLayer />}
+          </GoogleMap>
+        ) : (
+          <div>Loading map...</div>
+        )}
       </div>
 
       {/* PG Details Modal */}
       {selectedPg && !addingRentForPg && (
-        <div className="modal-overlay" onClick={() => setSelectedPg(null)}>
+        <div className="modal-overlay" onClick={() => { setSelectedPg(null); setIsAddingGmapsLink(false); setShowSharePopup(false); }}>
           <div className="modal-content glass" onClick={e => e.stopPropagation()}>
-            <button className="modal-close" onClick={() => setSelectedPg(null)}>
+            <button className="modal-close" onClick={() => { setSelectedPg(null); setIsAddingGmapsLink(false); setShowSharePopup(false); }}>
               <X size={24} />
             </button>
-            <h2 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <Home size={24} color="var(--primary-accent)" /> 
-              {selectedPg.name}
-            </h2>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', marginBottom: '0.5rem', position: 'relative' }}>
+              <h2 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', margin: 0 }}>
+                <Home size={24} color="var(--primary-accent)" /> 
+                {selectedPg.name}
+              </h2>
+              
+              <div style={{ position: 'relative', marginRight: '3rem' }}>
+                <button 
+                  onClick={() => setShowSharePopup(!showSharePopup)}
+                  style={{ background: 'var(--bg-color)', border: '1px solid var(--border-color)', borderRadius: '2rem', padding: '0.4rem 1rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem', fontWeight: 600, color: 'var(--primary-accent)' }}
+                >
+                  <Share2 size={16} /> Share
+                </button>
+
+                {showSharePopup && (
+                  <div className="glass" style={{ position: 'absolute', top: 'calc(100% + 0.5rem)', right: 0, width: '260px', zIndex: 100, padding: '1rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-lg)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.75rem', alignItems: 'center' }}>
+                      <span style={{ fontSize: '0.75rem', fontWeight: 700 }}>Share this PG</span>
+                      <X size={14} style={{ cursor: 'pointer' }} onClick={() => setShowSharePopup(false)} />
+                    </div>
+                    
+                    <div style={{ background: 'rgba(0,0,0,0.05)', padding: '0.5rem', borderRadius: '0.4rem', fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '1rem', wordBreak: 'break-all', border: '1px dashed var(--border-color)' }}>
+                      {`${window.location.origin}${window.location.pathname}?pg=${selectedPg.id}`}
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                      <button 
+                        className="btn-primary" 
+                        style={{ padding: '0.5rem', fontSize: '0.8rem', width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}
+                        onClick={(e) => {
+                          const shareUrl = `${window.location.origin}${window.location.pathname}?pg=${selectedPg.id}`;
+                          navigator.clipboard.writeText(shareUrl);
+                          const btn = e.currentTarget;
+                          const oldText = btn.innerHTML;
+                          btn.innerHTML = 'Copied!';
+                          setTimeout(() => btn.innerHTML = oldText, 2000);
+                        }}
+                      >
+                        Copy Link
+                      </button>
+                      <button 
+                        className="btn-primary" 
+                        style={{ padding: '0.5rem', fontSize: '0.8rem', width: '100%', background: '#25D366', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}
+                        onClick={() => {
+                          const shareUrl = `${window.location.origin}${window.location.pathname}?pg=${selectedPg.id}`;
+                          const text = `Hey! Check out this PG I found on Bengaluru PG Rent: ${selectedPg.name}\n\nLocation & Details: ${shareUrl}`;
+                          window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+                        }}
+                      >
+                        Share on WhatsApp
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
             <p style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <MapPin size={18} /> {selectedPg.address}
             </p>
+            {selectedPg.google_maps_link ? (
+              <p style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '-0.5rem' }}>
+                <MapPin size={18} color="var(--primary-accent)" /> 
+                <a href={selectedPg.google_maps_link} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--primary-accent)', fontSize: '0.85rem', fontWeight: 500 }}>View on Google Maps</a>
+              </p>
+            ) : (
+              <div style={{ marginBottom: '1rem', position: 'relative' }}>
+                <button 
+                  onClick={() => setIsAddingGmapsLink(true)}
+                  style={{ background: 'none', border: 'none', color: 'var(--primary-accent)', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', padding: 0, fontWeight: 500 }}
+                >
+                  <Plus size={16} /> Add Google Maps location
+                </button>
+
+                {isAddingGmapsLink && (
+                  <div className="glass" style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 10, marginTop: '0.5rem', padding: '1rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-lg)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.75rem', alignItems: 'center' }}>
+                      <span style={{ fontSize: '0.75rem', fontWeight: 600 }}>Update Location</span>
+                      <X size={14} style={{ cursor: 'pointer' }} onClick={() => setIsAddingGmapsLink(false)} />
+                    </div>
+                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                      <input 
+                        id={`update_gmaps_${selectedPg.id}`}
+                        autoFocus
+                        className="form-input" 
+                        placeholder="Paste Google Maps link..." 
+                        style={{ fontSize: '0.8rem', padding: '0.5rem 0.75rem', height: 'auto', flexGrow: 1, minWidth: 0 }}
+                      />
+                      <button 
+                        className="btn-primary" 
+                        style={{ padding: '0.5rem 1.25rem', fontSize: '0.8rem', minWidth: '80px', width: 'auto' }}
+                        onClick={async (e) => {
+                          const btn = e.currentTarget;
+                          const input = document.getElementById(`update_gmaps_${selectedPg.id}`);
+                          const link = input.value.trim();
+                          if (!link) return;
+                          
+                          btn.disabled = true;
+                          btn.textContent = 'Saving...';
+                          
+                          try {
+                            let lat = selectedPg.latitude;
+                            let lng = selectedPg.longitude;
+
+                            if (link.includes('maps.app.goo.gl') || link.includes('goo.gl/maps')) {
+                              const { data, error } = await supabase.functions.invoke('resolve-google-maps', {
+                                body: { url: link }
+                              });
+                              if (data && !error) {
+                                lat = data.lat;
+                                lng = data.lng;
+                              }
+                            } else {
+                              const coordsMatch = 
+                                link.match(/!3d(-?\d+\.\d+)/) || 
+                                link.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/) || 
+                                link.match(/q=(-?\d+\.\d+),(-?\d+\.\d+)/);
+                              
+                              if (coordsMatch) {
+                                const latMatch = link.match(/!3d(-?\d+\.\d+)/);
+                                const lngMatch = link.match(/!4d(-?\d+\.\d+)/);
+                                if (latMatch && lngMatch) {
+                                  lat = parseFloat(latMatch[1]);
+                                  lng = parseFloat(lngMatch[2]);
+                                } else {
+                                  lat = parseFloat(coordsMatch[1]);
+                                  lng = parseFloat(coordsMatch[2]);
+                                }
+                              }
+                            }
+
+                            const { error } = await supabase
+                              .from('pgs')
+                              .update({ google_maps_link: link, latitude: lat, longitude: lng })
+                              .eq('id', selectedPg.id);
+
+                            if (error) throw error;
+                            
+                            const updatedPgs = pgs.map(p => p.id === selectedPg.id ? { ...p, google_maps_link: link, latitude: lat, longitude: lng } : p);
+                            setPgs(updatedPgs);
+                            setSelectedPg({ ...selectedPg, google_maps_link: link, latitude: lat, longitude: lng });
+                            setIsAddingGmapsLink(false);
+                          } catch (err) {
+                            console.error("Error updating link:", err);
+                            alert("Failed to update link. Please try again.");
+                          } finally {
+                            btn.disabled = false;
+                            btn.textContent = 'Save';
+                          }
+                        }}
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
             
             <div style={{ margin: '1rem 0' }}>
               <span className="badge">{selectedPg.pg_type}</span>
@@ -566,11 +891,31 @@ export default function App() {
             <form onSubmit={(e) => {
               e.preventDefault();
               const formData = new FormData(e.target);
+              const gMapsLink = formData.get('google_maps_link');
+              
+              let lat = addingPgLocation.lat;
+              let lng = addingPgLocation.lng;
+
+              if (gMapsLink) {
+                const coordsMatch = 
+                  gMapsLink.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/) || 
+                  gMapsLink.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/) || 
+                  gMapsLink.match(/q=(-?\d+\.\d+),(-?\d+\.\d+)/) || 
+                  gMapsLink.match(/\/(-?\d+\.\d+),(-?\d+\.\d+)/) ||
+                  gMapsLink.match(/^(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)$/);
+                  
+                if (coordsMatch) {
+                  lat = parseFloat(coordsMatch[1]);
+                  lng = parseFloat(coordsMatch[2]);
+                }
+              }
+
               const dbPg = {
                 name: formData.get('name'),
                 address: formData.get('address'),
-                latitude: addingPgLocation.lat,
-                longitude: addingPgLocation.lng,
+                google_maps_link: gMapsLink,
+                latitude: lat,
+                longitude: lng,
                 pg_type: formData.get('pg_type'),
                 room_types: formData.getAll('room_types'),
                 amenities: formData.getAll('amenities'),
@@ -612,6 +957,59 @@ export default function App() {
               <div className="form-group">
                 <label className="form-label">Address</label>
                 <input required name="address" className="form-input" placeholder="Full address" />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Google Maps Link</label>
+                <input 
+                  name="google_maps_link" 
+                  className="form-input" 
+                  placeholder="Paste link to auto-locate" 
+                  onChange={(e) => {
+                    const link = e.target.value.trim();
+                    
+                    // 1. First, check if it's a short URL that needs resolving
+                    if (link.includes('maps.app.goo.gl') || link.includes('goo.gl/maps')) {
+                      supabase.functions.invoke('resolve-google-maps', {
+                        body: { url: link }
+                      }).then(({ data, error }) => {
+                        if (data && !error) {
+                          const { lat, lng } = data;
+                          setAddingPgLocation({ lat, lng });
+                          if (mapRef.current) {
+                            mapRef.current.panTo({ lat, lng });
+                            mapRef.current.setZoom(17);
+                          }
+                        }
+                      });
+                      return;
+                    }
+
+                    // 2. Otherwise, use multiple regex patterns for long Google Maps URL formats
+                    const coordsMatch = 
+                      link.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/) || // standard @lat,lng
+                      link.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/) || // internal !3d...!4d
+                      link.match(/q=(-?\d+\.\d+),(-?\d+\.\d+)/) || // search query q=lat,lng
+                      link.match(/\/(-?\d+\.\d+),(-?\d+\.\d+)/) || // path segment /lat,lng/
+                      link.match(/^(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)$/); // plain "lat, lng" string
+                    
+                    if (coordsMatch) {
+                      const newLat = parseFloat(coordsMatch[1]);
+                      const newLng = parseFloat(coordsMatch[2]);
+                      
+                      if (!isNaN(newLat) && !isNaN(newLng)) {
+                        const newPos = { lat: newLat, lng: newLng };
+                        setAddingPgLocation(newPos);
+                        if (mapRef.current) {
+                          mapRef.current.panTo(newPos);
+                          mapRef.current.setZoom(17);
+                        }
+                      }
+                    }
+                  }}
+                />
+                <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '0.25rem', fontWeight: 500 }}>
+                  Current Pin: {addingPgLocation.lat.toFixed(6)}, {addingPgLocation.lng.toFixed(6)}
+                </div>
               </div>
               <div className="form-group">
                 <label className="form-label">PG Type</label>
@@ -663,11 +1061,11 @@ export default function App() {
               <div style={{ display: 'flex', gap: '1rem', marginBottom: '1.5rem' }}>
                 <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
                   <label className="form-label">Phone</label>
-                  <input required name="contact_phone" type="tel" className="form-input" placeholder="Phone number" />
+                  <input name="contact_phone" type="tel" className="form-input" placeholder="Phone number" />
                 </div>
                 <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
                   <label className="form-label">Email</label>
-                  <input required name="contact_email" type="email" className="form-input" placeholder="Email address" />
+                  <input name="contact_email" type="email" className="form-input" placeholder="Email address" />
                 </div>
               </div>
               
