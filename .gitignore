@@ -3,7 +3,7 @@
 **/dist/
 **/dist-ssr/
 **/build/
-
+*.env
 # Environment variables
 **/.env
 **/.env.local
