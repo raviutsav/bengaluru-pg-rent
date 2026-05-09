@@ -106,12 +106,16 @@ const getMarkerIcon = (pg) => {
                 L 1 ${r + 1} 
                 A ${r} ${r} 0 0 1 ${r + 1} 1 Z`.replace(/\n\s+/g, ' ');
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${Math.round(width)}" height="${Math.round(height)}" viewBox="0 0 ${Math.round(width)} ${Math.round(height)}">
     <path d="${path}" fill="${markerColor}" stroke="white" stroke-width="2"/>
     ${rowElements}
   </svg>`;
   
-  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+  return {
+    url: `data:image/svg+xml;base64,${btoa(svg)}`,
+    width: Math.round(width),
+    height: Math.round(height)
+  };
 };
 
 // Mock Data for initial PGs
@@ -624,49 +628,23 @@ export default function App() {
             onClick={(e) => handleMapClick({ lat: e.latLng.lat(), lng: e.latLng.lng() })}
             options={mapOptions}
           >
-            <MarkerClustererF
-              calculator={(markers) => ({
-                text: `${markers.length} PGs`,
-                index: 1,
-              })}
-              options={{
-                gridSize: 60,
-                minimumClusterSize: 2,
-                styles: [
-                  {
-                    url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
-                      <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
-                        <circle cx="32" cy="32" r="28" fill="#4f46e5" stroke="white" stroke-width="3" />
-                        <circle cx="32" cy="32" r="30" fill="none" stroke="#4f46e5" stroke-width="1" opacity="0.3" />
-                      </svg>
-                    `),
-                    height: 64,
-                    width: 64,
-                    textColor: 'white',
-                    textSize: 11,
-                    fontWeight: 'bold',
-                  }
-                ]
-              }}
-            >
-              {(clusterer) => (
-                <>
-                  {filteredPgs.map(pg => {
-                    const iconUrl = getMarkerIcon(pg);
-                    return (
-                      <MarkerF
-                        key={pg.id}
-                        position={{ lat: pg.latitude, lng: pg.longitude }}
-                        icon={{ url: iconUrl }}
-                        onClick={() => handleMarkerClick(pg)}
-                        clusterer={clusterer}
-                        optimized={false}
-                      />
-                    );
-                  })}
-                </>
-              )}
-            </MarkerClustererF>
+            {/* PG Markers */}
+            {filteredPgs.map(pg => {
+              const iconData = getMarkerIcon(pg);
+              return (
+                <MarkerF
+                  key={pg.id}
+                  position={{ lat: pg.latitude, lng: pg.longitude }}
+                  icon={{ 
+                    url: iconData.url,
+                    anchor: isLoaded && window.google ? new google.maps.Point(iconData.width / 2, iconData.height) : null
+                  }}
+                  onClick={() => handleMarkerClick(pg)}
+                  optimized={false}
+                  zIndex={1000}
+                />
+              );
+            })}
             
             {/* Temporary Pin for adding PG */}
             {addingPgLocation && (
