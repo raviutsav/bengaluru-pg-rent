@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { GoogleMap, useJsApiLoader, OverlayViewF, MarkerF, TransitLayer, MarkerClustererF } from '@react-google-maps/api';
-import usePlacesAutocomplete, { getGeocode, getLatLng } from 'use-places-autocomplete';
+// We are migrating away from use-places-autocomplete to use the new Google Maps Places API
 import { Search, Filter, X, Plus, Home, MapPin, IndianRupee, Star, Train, Share2 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 import './index.css';
@@ -9,7 +9,7 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-const libraries = ['places'];
+const MAP_LIBRARIES = ['places'];
 const mapContainerStyle = { height: '100%', width: '100%' };
 
 const defaultCenter = { lat: 12.9716, lng: 77.5946 }; // Bangalore
@@ -110,6 +110,8 @@ export default function App() {
   const [showTransit, setShowTransit] = useState(false);
   const [isAddingGmapsLink, setIsAddingGmapsLink] = useState(false);
   const [showSharePopup, setShowSharePopup] = useState(false);
+  const [isResolving, setIsResolving] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
 
   useEffect(() => {
     const fetchPgs = async () => {
@@ -141,7 +143,7 @@ export default function App() {
   const { isLoaded } = useJsApiLoader({
     id: 'google-map-script',
     googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY,
-    libraries,
+    libraries: MAP_LIBRARIES,
   });
 
   const [map, setMap] = useState(null);
@@ -149,6 +151,7 @@ export default function App() {
   const mapOptions = useMemo(() => ({
     disableDefaultUI: true,
     zoomControl: true,
+    gestureHandling: 'greedy',
     styles: [
       {
         featureType: "poi",
@@ -170,22 +173,9 @@ export default function App() {
         stylers: [{ visibility: "off" }]
       },
       {
-        featureType: "transit.line.rail",
-        stylers: [{ visibility: "off" }]
-      },
-      {
-        featureType: "transit.station.rail",
-        stylers: [{ visibility: "off" }]
-      },
-      {
-        featureType: "transit.line.metro",
-        elementType: "geometry.fill",
+        featureType: "transit.line",
+        elementType: "geometry",
         stylers: [{ visibility: "on" }]
-      },
-      {
-        featureType: "transit.line.metro",
-        elementType: "geometry.stroke",
-        stylers: [{ visibility: "off" }]
       },
       {
         featureType: "transit.station",
@@ -205,50 +195,99 @@ export default function App() {
     mapRef.current = null;
   }, []);
 
-  const {
-    ready,
-    value: searchValue,
-    suggestions: { status, data },
-    setValue: setSearchValue,
-    clearSuggestions,
-    init,
-  } = usePlacesAutocomplete({
-    initOnMount: false,
-    requestOptions: {
-      componentRestrictions: { country: "in" },
-      bounds: {
-        north: 13.20,
-        south: 12.75,
-        east: 77.85,
-        west: 77.35,
-      },
-      strictBounds: true,
-      types: ['geocode', 'establishment'],
-    },
-    debounce: 800,
-  });
+  // --- New Places Autocomplete Implementation ---
+  const [searchValue, setSearchValue] = useState("");
+  const [suggestions, setSuggestions] = useState({ status: "", data: [] });
+  const [sessionToken, setSessionToken] = useState(null);
 
+  // Initialize session token
   useEffect(() => {
-    if (isLoaded) {
-      init();
-    }
-  }, [isLoaded, init]);
+    const initSession = async () => {
+      if (isLoaded && window.google) {
+        const { AutocompleteSessionToken } = await google.maps.importLibrary("places");
+        setSessionToken(new AutocompleteSessionToken());
+      }
+    };
+    initSession();
+  }, [isLoaded]);
 
-  const handleSelectPlace = async (address) => {
-    setSearchValue(address, false);
-    clearSuggestions();
-    setShowDropdown(false);
+  // Fetch suggestions using the NEW Places API (v3.55+)
+  const fetchSuggestions = useCallback(async (input) => {
+    if (!input || !isLoaded || !window.google || !sessionToken) {
+      setSuggestions({ status: "", data: [] });
+      return;
+    }
 
     try {
-      const results = await getGeocode({ address });
-      const { lat, lng } = await getLatLng(results[0]);
+      setIsSearching(true);
+      // Use the modern importLibrary method to ensure we have the latest classes
+      const { AutocompleteSuggestion } = await google.maps.importLibrary("places");
+      
+      const { suggestions: results } = await AutocompleteSuggestion.fetchAutocompleteSuggestions({
+        input,
+        sessionToken,
+        locationRestriction: {
+          north: 13.20,
+          south: 12.75,
+          east: 77.85,
+          west: 77.35,
+        },
+        includedRegionCodes: ["in"],
+      });
+
+      setSuggestions({
+        status: results.length > 0 ? "OK" : "ZERO_RESULTS",
+        data: results.map(s => ({
+          place_id: s.placePrediction.placeId,
+          description: s.placePrediction.text.toString(),
+          main_text: s.placePrediction.mainText.toString(),
+          secondary_text: s.placePrediction.secondaryText?.toString() || ""
+        }))
+      });
+    } catch (e) {
+      console.error("New Autocomplete Error:", e);
+      setSuggestions({ status: "ERROR", data: [] });
+    } finally {
+      setIsSearching(false);
+    }
+  }, [isLoaded, sessionToken]);
+
+  // Debounced search
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (searchValue.length > 2) {
+        fetchSuggestions(searchValue);
+      } else {
+        setSuggestions({ status: "", data: [] });
+      }
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [searchValue, fetchSuggestions]);
+
+  const handleSelectPlace = async (description, placeId) => {
+    setSearchValue(description);
+    setSuggestions({ status: "", data: [] });
+    setShowDropdown(false);
+    
+    try {
+      // Refresh session token for the next sequence
+      const { AutocompleteSessionToken, Place } = await google.maps.importLibrary("places");
+      setSessionToken(new AutocompleteSessionToken());
+
+      // Use the new Place class to get details
+      const place = new Place({ id: placeId });
+      await place.fetchFields({ fields: ["location", "displayName"] });
+      
+      const lat = place.location.lat();
+      const lng = place.location.lng();
+      
       setSearchMarker({ lat, lng });
       if (mapRef.current) {
         mapRef.current.panTo({ lat, lng });
         mapRef.current.setZoom(15);
       }
-    } catch (error) {
-      console.error("Error: ", error);
+    } catch (e) {
+      console.error("Geocoding Error:", e);
     }
   };
 
@@ -415,24 +454,32 @@ export default function App() {
       {/* Header overlay with Search & Filter */}
       <div className="header-overlay glass">
         <div className="search-bar" style={{ position: 'relative' }}>
-          <Search size={20} className="text-secondary" color="var(--text-secondary)" />
-          <input 
-            type="text" 
-            placeholder="Search places in Bangalore..." 
-            className="search-input"
-            value={searchValue}
-            onChange={(e) => {
-              setSearchValue(e.target.value);
-              setShowDropdown(true);
-            }}
-            disabled={!ready}
-            onFocus={() => setShowDropdown(true)}
-            onBlur={() => setTimeout(() => setShowDropdown(false), 200)}
-          />
+          <div style={{ position: 'relative', flexGrow: 1, display: 'flex', alignItems: 'center' }}>
+            <Search size={20} className="text-secondary" color="var(--text-secondary)" />
+            <input 
+              type="text" 
+              placeholder="Search places in Bangalore..." 
+              className="search-input"
+              value={searchValue}
+              onChange={(e) => {
+                setSearchValue(e.target.value);
+                setShowDropdown(true);
+              }}
+              disabled={!isLoaded}
+              onFocus={() => setShowDropdown(true)}
+              onBlur={() => setTimeout(() => setShowDropdown(false), 200)}
+              style={{ paddingRight: isSearching ? '2.5rem' : '0.75rem' }}
+            />
+            {isSearching && (
+              <div style={{ position: 'absolute', right: '0.75rem' }}>
+                <div className="spinner" style={{ width: '1rem', height: '1rem' }}></div>
+              </div>
+            )}
+          </div>
           
-          {showDropdown && status === "OK" && (
+          {showDropdown && suggestions.status === "OK" && (
             <div className="search-dropdown glass" style={{ position: 'absolute', top: 'calc(100% + 0.75rem)', left: 0, right: 0, background: 'var(--card-bg)', borderRadius: 'var(--radius-md)', boxShadow: 'var(--shadow-lg)', overflow: 'hidden', zIndex: 2000, border: '1px solid var(--border-color)' }}>
-              {data
+              {suggestions.data
                 .filter(item => 
                   item.description.toLowerCase().includes('bangalore') || 
                   item.description.toLowerCase().includes('bengaluru')
@@ -441,7 +488,7 @@ export default function App() {
                 <div 
                   key={place_id} 
                   style={{ padding: '0.75rem 1rem', cursor: 'pointer', borderBottom: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', textAlign: 'left' }}
-                  onClick={() => handleSelectPlace(description)}
+                  onClick={() => handleSelectPlace(description, place_id)}
                   onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-color)'}
                   onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
                 >
@@ -618,17 +665,32 @@ export default function App() {
               )}
             </MarkerClustererF>
             
+            {/* Temporary Pin for adding PG */}
             {addingPgLocation && (
-              <MarkerF position={addingPgLocation} />
+              <OverlayViewF
+                position={addingPgLocation}
+                mapPaneName={OverlayViewF.OVERLAY_MOUSE_TARGET}
+              >
+                <div style={{ transform: 'translate(-50%, -100%)' }}>
+                  <MapPin size={32} color="#ef4444" fill="white" />
+                </div>
+              </OverlayViewF>
             )}
 
+            {/* Search Result Marker */}
             {searchMarker && (
-              <MarkerF 
+              <OverlayViewF
                 position={searchMarker}
-                icon={{
-                  url: 'https://maps.google.com/mapfiles/ms/icons/blue-dot.png'
-                }}
-              />
+                mapPaneName={OverlayViewF.OVERLAY_MOUSE_TARGET}
+              >
+                <div style={{ transform: 'translate(-50%, -100%)' }}>
+                  <div style={{ 
+                    width: '16px', height: '16px', background: '#3b82f6', 
+                    border: '3px solid white', borderRadius: '50%', 
+                    boxShadow: '0 0 10px rgba(59, 130, 246, 0.8)' 
+                  }} />
+                </div>
+              </OverlayViewF>
             )}
 
             {showTransit && <TransitLayer />}
@@ -723,57 +785,86 @@ export default function App() {
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.75rem', alignItems: 'center' }}>
                       <span style={{ fontSize: '0.75rem', fontWeight: 600 }}>Update Location</span>
                       <X size={14} style={{ cursor: 'pointer' }} onClick={() => setIsAddingGmapsLink(false)} />
-                    </div>
-                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                      <input 
-                        id={`update_gmaps_${selectedPg.id}`}
-                        autoFocus
-                        className="form-input" 
-                        placeholder="Paste Google Maps link..." 
-                        style={{ fontSize: '0.8rem', padding: '0.5rem 0.75rem', height: 'auto', flexGrow: 1, minWidth: 0 }}
-                      />
+                    </div>                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', position: 'relative' }}>
+                      <div style={{ position: 'relative', flexGrow: 1 }}>
+                        <input 
+                          id={`update_gmaps_${selectedPg.id}`}
+                          autoFocus
+                          className="form-input" 
+                          placeholder="Paste Google Maps link..." 
+                          style={{ fontSize: '0.8rem', padding: '0.5rem 0.75rem', height: 'auto', width: '100%', minWidth: 0, paddingRight: isResolving ? '2.5rem' : '0.75rem' }}
+                          onChange={async (e) => {
+                            const link = e.target.value.trim();
+                            if (!link || isResolving) return;
+                            
+                            if (link.includes('maps.app.goo.gl') || link.includes('goo.gl/maps') || link.includes('google.com/maps')) {
+                              setIsResolving(true);
+                              try {
+                                const { data, error: funcError } = await supabase.functions.invoke('resolve-google-maps', {
+                                  body: { url: link }
+                                });
+                                if (data && !funcError) {
+                                  const { lat, lng } = data;
+                                  if (mapRef.current) {
+                                    mapRef.current.panTo({ lat, lng });
+                                    mapRef.current.setZoom(17);
+                                  }
+                                }
+                              } catch (err) {
+                                console.error("Auto-resolve error:", err);
+                              } finally {
+                                setIsResolving(false);
+                              }
+                            }
+                          }}
+                        />
+                        {isResolving && (
+                          <div style={{ position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)' }}>
+                            <div className="spinner" style={{ width: '0.8rem', height: '0.8rem' }}></div>
+                          </div>
+                        )}
+                      </div>
                       <button 
                         className="btn-primary" 
-                        style={{ padding: '0.5rem 1.25rem', fontSize: '0.8rem', minWidth: '80px', width: 'auto' }}
+                        disabled={isResolving}
+                        style={{ padding: '0.5rem 1.25rem', fontSize: '0.8rem', minWidth: '80px', width: 'auto', opacity: isResolving ? 0.7 : 1 }}
                         onClick={async (e) => {
-                          const btn = e.currentTarget;
                           const input = document.getElementById(`update_gmaps_${selectedPg.id}`);
                           const link = input.value.trim();
-                          if (!link) return;
+                          if (!link || isResolving) return;
                           
-                          btn.disabled = true;
-                          btn.textContent = 'Saving...';
+                          setIsResolving(true);
                           
                           try {
                             let lat = selectedPg.latitude;
                             let lng = selectedPg.longitude;
 
-                            if (link.includes('maps.app.goo.gl') || link.includes('goo.gl/maps')) {
-                              const { data, error } = await supabase.functions.invoke('resolve-google-maps', {
+                            if (link.includes('maps.app.goo.gl') || link.includes('goo.gl/maps') || link.includes('google.com/maps')) {
+                              const { data, error: funcError } = await supabase.functions.invoke('resolve-google-maps', {
                                 body: { url: link }
                               });
-                              if (data && !error) {
+                              if (data && !funcError) {
                                 lat = data.lat;
                                 lng = data.lng;
-                              }
-                            } else {
-                              const coordsMatch = 
-                                link.match(/!3d(-?\d+\.\d+)/) || 
-                                link.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/) || 
-                                link.match(/q=(-?\d+\.\d+),(-?\d+\.\d+)/);
-                              
-                              if (coordsMatch) {
-                                const latMatch = link.match(/!3d(-?\d+\.\d+)/);
-                                const lngMatch = link.match(/!4d(-?\d+\.\d+)/);
-                                if (latMatch && lngMatch) {
-                                  lat = parseFloat(latMatch[1]);
-                                  lng = parseFloat(lngMatch[2]);
-                                } else {
-                                  lat = parseFloat(coordsMatch[1]);
-                                  lng = parseFloat(coordsMatch[2]);
+                              } else {
+                                if (funcError) console.error("Resolution error:", funcError);
+                                const localMatch = link.match(/!3d(-?\d+\.\d+)/) || link.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/) || link.match(/q=(-?\d+\.\d+),(-?\d+\.\d+)/);
+                                if (localMatch) {
+                                  const latMatch = link.match(/!3d(-?\d+\.\d+)/);
+                                  const lngMatch = link.match(/!4d(-?\d+\.\d+)/);
+                                  if (latMatch && lngMatch) {
+                                    lat = parseFloat(latMatch[1]);
+                                    lng = parseFloat(lngMatch[2]);
+                                  } else {
+                                    lat = parseFloat(localMatch[1]);
+                                    lng = parseFloat(localMatch[2]);
+                                  }
+                                } else if (funcError) {
+                                  alert("Could not resolve this Google Maps link. The marker will remain at its current position.");
                                 }
                               }
                             }
+                              
 
                             const { error } = await supabase
                               .from('pgs')
@@ -790,14 +881,14 @@ export default function App() {
                             console.error("Error updating link:", err);
                             alert("Failed to update link. Please try again.");
                           } finally {
-                            btn.disabled = false;
-                            btn.textContent = 'Save';
+                            setIsResolving(false);
                           }
                         }}
                       >
-                        Save
+                        {isResolving ? '...' : 'Save'}
                       </button>
                     </div>
+
                   </div>
                 )}
               </div>
@@ -888,7 +979,7 @@ export default function App() {
             <h2>Register New PG</h2>
             <p>At selected map location</p>
             
-            <form onSubmit={(e) => {
+            <form onSubmit={async (e) => {
               e.preventDefault();
               const formData = new FormData(e.target);
               const gMapsLink = formData.get('google_maps_link');
@@ -896,17 +987,27 @@ export default function App() {
               let lat = addingPgLocation.lat;
               let lng = addingPgLocation.lng;
 
-              if (gMapsLink) {
-                const coordsMatch = 
-                  gMapsLink.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/) || 
-                  gMapsLink.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/) || 
-                  gMapsLink.match(/q=(-?\d+\.\d+),(-?\d+\.\d+)/) || 
-                  gMapsLink.match(/\/(-?\d+\.\d+),(-?\d+\.\d+)/) ||
-                  gMapsLink.match(/^(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)$/);
-                  
-                if (coordsMatch) {
-                  lat = parseFloat(coordsMatch[1]);
-                  lng = parseFloat(coordsMatch[2]);
+              if (gMapsLink && (gMapsLink.includes('maps.app.goo.gl') || gMapsLink.includes('goo.gl/maps') || gMapsLink.includes('google.com/maps'))) {
+                setIsResolving(true);
+                try {
+                  const { data, error: funcError } = await supabase.functions.invoke('resolve-google-maps', {
+                    body: { url: gMapsLink }
+                  });
+                  if (data && !funcError) {
+                    lat = data.lat;
+                    lng = data.lng;
+                  } else {
+                    // Fallback to local regex if edge function fails
+                    const coordsMatch = gMapsLink.match(/!3d(-?\d+\.\d+)/) || gMapsLink.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+                    if (coordsMatch) {
+                      lat = parseFloat(coordsMatch[1]);
+                      lng = parseFloat(coordsMatch[2]);
+                    }
+                  }
+                } catch (err) {
+                  console.error("Error resolving maps link:", err);
+                } finally {
+                  setIsResolving(false);
                 }
               }
 
@@ -933,22 +1034,20 @@ export default function App() {
                 }
               };
               
-              const insertPg = async () => {
-                try {
-                  const { data, error } = await supabase
-                    .from('pgs')
-                    .insert([dbPg])
-                    .select();
-                    
-                  if (error) throw error;
-                  const savedPg = { ...data[0], rents: [] };
-                  setPgs([...pgs, savedPg]);
-                  setAddingPgLocation(null);
-                } catch (err) {
-                  console.error("Error creating PG:", err);
-                }
-              };
-              insertPg();
+              try {
+                const { data, error } = await supabase
+                  .from('pgs')
+                  .insert([dbPg])
+                  .select();
+                  
+                if (error) throw error;
+                const savedPg = { ...data[0], rents: [] };
+                setPgs([...pgs, savedPg]);
+                setAddingPgLocation(null);
+              } catch (err) {
+                console.error("Error creating PG:", err);
+                alert("Failed to register PG. Please try again.");
+              }
             }}>
               <div className="form-group">
                 <label className="form-label">PG Name</label>
@@ -960,53 +1059,44 @@ export default function App() {
               </div>
               <div className="form-group">
                 <label className="form-label">Google Maps Link</label>
-                <input 
-                  name="google_maps_link" 
-                  className="form-input" 
-                  placeholder="Paste link to auto-locate" 
-                  onChange={(e) => {
-                    const link = e.target.value.trim();
-                    
-                    // 1. First, check if it's a short URL that needs resolving
-                    if (link.includes('maps.app.goo.gl') || link.includes('goo.gl/maps')) {
-                      supabase.functions.invoke('resolve-google-maps', {
-                        body: { url: link }
-                      }).then(({ data, error }) => {
-                        if (data && !error) {
-                          const { lat, lng } = data;
-                          setAddingPgLocation({ lat, lng });
-                          if (mapRef.current) {
-                            mapRef.current.panTo({ lat, lng });
-                            mapRef.current.setZoom(17);
-                          }
-                        }
-                      });
-                      return;
-                    }
-
-                    // 2. Otherwise, use multiple regex patterns for long Google Maps URL formats
-                    const coordsMatch = 
-                      link.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/) || // standard @lat,lng
-                      link.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/) || // internal !3d...!4d
-                      link.match(/q=(-?\d+\.\d+),(-?\d+\.\d+)/) || // search query q=lat,lng
-                      link.match(/\/(-?\d+\.\d+),(-?\d+\.\d+)/) || // path segment /lat,lng/
-                      link.match(/^(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)$/); // plain "lat, lng" string
-                    
-                    if (coordsMatch) {
-                      const newLat = parseFloat(coordsMatch[1]);
-                      const newLng = parseFloat(coordsMatch[2]);
+                <div style={{ position: 'relative' }}>
+                  <input 
+                    name="google_maps_link" 
+                    className="form-input" 
+                    placeholder="Paste link to resolve location..." 
+                    style={{ paddingRight: isResolving ? '2.5rem' : '0.5rem' }}
+                    onChange={async (e) => {
+                      const link = e.target.value.trim();
+                      if (!link || isResolving) return;
                       
-                      if (!isNaN(newLat) && !isNaN(newLng)) {
-                        const newPos = { lat: newLat, lng: newLng };
-                        setAddingPgLocation(newPos);
-                        if (mapRef.current) {
-                          mapRef.current.panTo(newPos);
-                          mapRef.current.setZoom(17);
+                      if (link.includes('maps.app.goo.gl') || link.includes('goo.gl/maps') || link.includes('google.com/maps')) {
+                        setIsResolving(true);
+                        try {
+                          const { data, error: funcError } = await supabase.functions.invoke('resolve-google-maps', {
+                            body: { url: link }
+                          });
+                          if (data && !funcError) {
+                            const { lat, lng } = data;
+                            setAddingPgLocation({ lat, lng });
+                            if (mapRef.current) {
+                              mapRef.current.panTo({ lat, lng });
+                              mapRef.current.setZoom(17);
+                            }
+                          }
+                        } catch (err) {
+                          console.error("Auto-resolve error:", err);
+                        } finally {
+                          setIsResolving(false);
                         }
                       }
-                    }
-                  }}
-                />
+                    }}
+                  />
+                  {isResolving && (
+                    <div style={{ position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)' }}>
+                      <div className="spinner" style={{ width: '0.8rem', height: '0.8rem' }}></div>
+                    </div>
+                  )}
+                </div>
                 <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '0.25rem', fontWeight: 500 }}>
                   Current Pin: {addingPgLocation.lat.toFixed(6)}, {addingPgLocation.lng.toFixed(6)}
                 </div>
