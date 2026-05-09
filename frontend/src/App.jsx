@@ -204,7 +204,7 @@ const CustomSelect = ({ name, options, value: externalValue, onChange, placehold
 }
 
 export default function App() {
-  const [pgs, setPgs] = useState([]);
+  const [pgs, setPgs] = useState(mockPgs); // Initialize with mock data for instant display
   const [showFilters, setShowFilters] = useState(false);
   const [draftFilters, setDraftFilters] = useState({ pg_type: '', room_type: '' });
   const [appliedFilters, setAppliedFilters] = useState({ pg_type: '', room_type: '' });
@@ -219,6 +219,15 @@ export default function App() {
   const [showSharePopup, setShowSharePopup] = useState(false);
   const [isResolving, setIsResolving] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
+
+  // Pre-calculate all marker icons to avoid lag on mobile
+  const pgIcons = useMemo(() => {
+    const icons = {};
+    pgs.forEach(pg => {
+      icons[pg.id] = getMarkerIcon(pg);
+    });
+    return icons;
+  }, [pgs]);
 
   const fetchPgs = useCallback(async () => {
     try {
@@ -659,7 +668,7 @@ export default function App() {
               {(clusterer) => (
                 <>
                   {filteredPgs.map(pg => {
-                    const iconData = getMarkerIcon(pg);
+                    const iconData = pgIcons[pg.id] || getMarkerIcon(pg);
                     return (
                       <MarkerF
                         key={pg.id}
