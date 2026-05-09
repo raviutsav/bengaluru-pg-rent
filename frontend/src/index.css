@@ -452,3 +452,18 @@ p {
 ::-webkit-scrollbar-thumb:hover {
   background-color: rgba(100, 116, 139, 0.8);
 }
+
+/* Spinner for loading states */
+.spinner {
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid rgba(79, 70, 229, 0.2);
+  border-top-color: var(--primary-accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  display: inline-block;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
