@@ -111,8 +111,11 @@ const getMarkerIcon = (pg) => {
     ${rowElements}
   </svg>`;
   
+  // Unicode-safe base64 encoding for the SVG (handles the Rupee symbol ₹)
+  const base64Svg = btoa(unescape(encodeURIComponent(svg)));
+  
   return {
-    url: `data:image/svg+xml;base64,${btoa(svg)}`,
+    url: `data:image/svg+xml;base64,${base64Svg}`,
     width: Math.round(width),
     height: Math.round(height)
   };
@@ -628,23 +631,53 @@ export default function App() {
             onClick={(e) => handleMapClick({ lat: e.latLng.lat(), lng: e.latLng.lng() })}
             options={mapOptions}
           >
-            {/* PG Markers */}
-            {filteredPgs.map(pg => {
-              const iconData = getMarkerIcon(pg);
-              return (
-                <MarkerF
-                  key={pg.id}
-                  position={{ lat: pg.latitude, lng: pg.longitude }}
-                  icon={{ 
-                    url: iconData.url,
-                    anchor: isLoaded && window.google ? new google.maps.Point(iconData.width / 2, iconData.height) : null
-                  }}
-                  onClick={() => handleMarkerClick(pg)}
-                  optimized={false}
-                  zIndex={1000}
-                />
-              );
-            })}
+            <MarkerClustererF
+              calculator={(markers) => ({
+                text: `${markers.length} PGs`,
+                index: 1,
+              })}
+              options={{
+                gridSize: 60,
+                minimumClusterSize: 2,
+                styles: [
+                  {
+                    url: `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(`
+                      <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+                        <circle cx="32" cy="32" r="28" fill="#4f46e5" stroke="white" stroke-width="3" />
+                        <circle cx="32" cy="32" r="30" fill="none" stroke="#4f46e5" stroke-width="1" opacity="0.3" />
+                      </svg>
+                    `)))}`,
+                    height: 64,
+                    width: 64,
+                    textColor: 'white',
+                    textSize: 11,
+                    fontWeight: 'bold',
+                  }
+                ]
+              }}
+            >
+              {(clusterer) => (
+                <>
+                  {filteredPgs.map(pg => {
+                    const iconData = getMarkerIcon(pg);
+                    return (
+                      <MarkerF
+                        key={pg.id}
+                        position={{ lat: pg.latitude, lng: pg.longitude }}
+                        icon={{ 
+                          url: iconData.url,
+                          anchor: isLoaded && window.google ? new google.maps.Point(iconData.width / 2, iconData.height) : null
+                        }}
+                        onClick={() => handleMarkerClick(pg)}
+                        clusterer={clusterer}
+                        optimized={false}
+                        zIndex={1000}
+                      />
+                    );
+                  })}
+                </>
+              )}
+            </MarkerClustererF>
             
             {/* Temporary Pin for adding PG */}
             {addingPgLocation && (
