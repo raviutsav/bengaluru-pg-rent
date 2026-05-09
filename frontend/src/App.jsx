@@ -14,6 +14,106 @@ const mapContainerStyle = { height: '100%', width: '100%' };
 
 const defaultCenter = { lat: 12.9716, lng: 77.5946 }; // Bangalore
 
+const getMarkerIcon = (pg) => {
+  const backendRents = pg.pg_rent || [];
+  const localRents = pg.rents || [];
+  const activeRents = [...backendRents, ...localRents];
+  
+  let markerColor = '#64748b';
+  let lines = [{ sharing: '-', price: 'NA' }];
+  
+  if (activeRents.length > 0) {
+    // Calculate overall average rating
+    const ratings = activeRents.map(r => r.rating).filter(r => r != null);
+    let avgRating = 0;
+    if (ratings.length > 0) {
+      avgRating = ratings.reduce((a, b) => a + b, 0) / ratings.length;
+    }
+    
+    // Map rating to color (red to green spectrum)
+    if (avgRating > 0) {
+      // Map rating 1-5 to hue 0-120 (0 = Red, 120 = Green)
+      const hue = Math.max(0, Math.min(120, (avgRating - 1) * 30));
+      markerColor = `hsl(${hue}, 85%, 45%)`;
+    }
+    
+    // Calculate average rent per room type
+    const rentByRoom = {};
+    activeRents.forEach(r => {
+      if (!rentByRoom[r.room_type]) {
+        rentByRoom[r.room_type] = { sum: 0, count: 0 };
+      }
+      rentByRoom[r.room_type].sum += r.monthly_rent;
+      rentByRoom[r.room_type].count += 1;
+    });
+    
+    const typeMapping = {
+      'single': '1',
+      'studio': '1',
+      'double': '2',
+      'triple': '3',
+      'quadruple': '4'
+    };
+    
+    lines = Object.entries(rentByRoom).map(([type, data]) => {
+      const avgRent = data.sum / data.count;
+      const label = typeMapping[type] || type.charAt(0).toUpperCase();
+      return {
+        sharing: label,
+        price: `₹${(avgRent/1000).toFixed(1)}k`
+      };
+    });
+  }
+
+  const fontSizePrice = 13;
+  const fontSizeSharing = 11;
+  const rowHeight = 24;
+  const paddingY = 6;
+  const paddingX = 10;
+  const circleRadius = 10;
+  const gap = 8;
+  
+  const maxPriceChars = Math.max(...lines.map(l => l.price.length));
+  const priceTextWidth = maxPriceChars * 8.5;
+  const width = Math.max(90, paddingX + (circleRadius * 2) + gap + priceTextWidth + paddingX); 
+  const rectHeight = lines.length * rowHeight + paddingY * 2;
+  const height = rectHeight + 8; // pointer triangle height
+  const centerX = width / 2;
+
+  const rowElements = lines.map((line, index) => {
+    const yCenter = paddingY + (index * rowHeight) + (rowHeight / 2);
+    const circleX = paddingX + circleRadius;
+    const textX = paddingX + (circleRadius * 2) + gap;
+    
+    return `<g>
+      <circle cx="${circleX}" cy="${yCenter}" r="${circleRadius}" fill="rgba(255,255,255,0.25)"/>
+      <text x="${circleX}" y="${yCenter + 1}" dominant-baseline="central" text-anchor="middle" fill="white" font-family="sans-serif" font-size="${fontSizeSharing}px" font-weight="bold">${line.sharing}</text>
+      <text x="${textX}" y="${yCenter + 1}" dominant-baseline="central" fill="white" font-family="sans-serif" font-size="${fontSizePrice}px" font-weight="bold">${line.price}</text>
+    </g>`;
+  }).join('');
+
+  const r = 8;
+  const path = `M ${r} 1 
+                L ${width - r} 1 
+                A ${r} ${r} 0 0 1 ${width - 1} ${r + 1} 
+                L ${width - 1} ${rectHeight - r - 1} 
+                A ${r} ${r} 0 0 1 ${width - r - 1} ${rectHeight - 1} 
+                L ${centerX + 8} ${rectHeight - 1} 
+                L ${centerX} ${height - 1} 
+                L ${centerX - 8} ${rectHeight - 1} 
+                L ${r + 1} ${rectHeight - 1} 
+                A ${r} ${r} 0 0 1 1 ${rectHeight - r - 1} 
+                L 1 ${r + 1} 
+                A ${r} ${r} 0 0 1 ${r + 1} 1 Z`.replace(/\n\s+/g, ' ');
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+    <path d="${path}" fill="${markerColor}" stroke="white" stroke-width="2"/>
+    ${rowElements}
+  </svg>`;
+  
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+};
+
 // Mock Data for initial PGs
 const mockPgs = [
   {
@@ -113,21 +213,22 @@ export default function App() {
   const [isResolving, setIsResolving] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
 
-  useEffect(() => {
-    const fetchPgs = async () => {
-      try {
-        const { data, error } = await supabase
-          .from('pgs')
-          .select('*, pg_rent(room_type, monthly_rent, rating)');
-          
-        if (error) throw error;
-        setPgs(data);
-      } catch (err) {
-        console.error("Error fetching PGs:", err);
-      }
-    };
-    fetchPgs();
+  const fetchPgs = useCallback(async () => {
+    try {
+      const { data, error } = await supabase
+        .from('pgs')
+        .select('*, pg_rent(room_type, monthly_rent, rating)');
+        
+      if (error) throw error;
+      setPgs(data);
+    } catch (err) {
+      console.error("Error fetching PGs:", err);
+    }
   }, []);
+
+  useEffect(() => {
+    fetchPgs();
+  }, [fetchPgs]);
 
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
@@ -350,105 +451,6 @@ export default function App() {
     }
   };
 
-  const getMarkerIcon = (pg) => {
-    const backendRents = pg.pg_rent || [];
-    const localRents = pg.rents || [];
-    const activeRents = [...backendRents, ...localRents];
-    
-    let markerColor = '#64748b';
-    let lines = [{ sharing: '-', price: 'NA' }];
-    
-    if (activeRents.length > 0) {
-      // Calculate overall average rating
-      const ratings = activeRents.map(r => r.rating).filter(r => r != null);
-      let avgRating = 0;
-      if (ratings.length > 0) {
-        avgRating = ratings.reduce((a, b) => a + b, 0) / ratings.length;
-      }
-      
-      // Map rating to color (red to green spectrum)
-      if (avgRating > 0) {
-        // Map rating 1-5 to hue 0-120 (0 = Red, 120 = Green)
-        const hue = Math.max(0, Math.min(120, (avgRating - 1) * 30));
-        markerColor = `hsl(${hue}, 85%, 45%)`;
-      }
-      
-      // Calculate average rent per room type
-      const rentByRoom = {};
-      activeRents.forEach(r => {
-        if (!rentByRoom[r.room_type]) {
-          rentByRoom[r.room_type] = { sum: 0, count: 0 };
-        }
-        rentByRoom[r.room_type].sum += r.monthly_rent;
-        rentByRoom[r.room_type].count += 1;
-      });
-      
-      const typeMapping = {
-        'single': '1',
-        'studio': '1',
-        'double': '2',
-        'triple': '3',
-        'quadruple': '4'
-      };
-      
-      lines = Object.entries(rentByRoom).map(([type, data]) => {
-        const avgRent = data.sum / data.count;
-        const label = typeMapping[type] || type.charAt(0).toUpperCase();
-        return {
-          sharing: label,
-          price: `₹${(avgRent/1000).toFixed(1)}k`
-        };
-      });
-    }
-
-    const fontSizePrice = 13;
-    const fontSizeSharing = 11;
-    const rowHeight = 24;
-    const paddingY = 6;
-    const paddingX = 10;
-    const circleRadius = 10;
-    const gap = 8;
-    
-    const maxPriceChars = Math.max(...lines.map(l => l.price.length));
-    const priceTextWidth = maxPriceChars * 8.5;
-    const width = Math.max(90, paddingX + (circleRadius * 2) + gap + priceTextWidth + paddingX); 
-    const rectHeight = lines.length * rowHeight + paddingY * 2;
-    const height = rectHeight + 8; // pointer triangle height
-    const centerX = width / 2;
-
-    const rowElements = lines.map((line, index) => {
-      const yCenter = paddingY + (index * rowHeight) + (rowHeight / 2);
-      const circleX = paddingX + circleRadius;
-      const textX = paddingX + (circleRadius * 2) + gap;
-      
-      return `<g>
-        <circle cx="${circleX}" cy="${yCenter}" r="${circleRadius}" fill="rgba(255,255,255,0.25)"/>
-        <text x="${circleX}" y="${yCenter + 1}" dominant-baseline="central" text-anchor="middle" fill="white" font-family="sans-serif" font-size="${fontSizeSharing}px" font-weight="bold">${line.sharing}</text>
-        <text x="${textX}" y="${yCenter + 1}" dominant-baseline="central" fill="white" font-family="sans-serif" font-size="${fontSizePrice}px" font-weight="bold">${line.price}</text>
-      </g>`;
-    }).join('');
-
-    const r = 8;
-    const path = `M ${r} 1 
-                  L ${width - r} 1 
-                  A ${r} ${r} 0 0 1 ${width - 1} ${r + 1} 
-                  L ${width - 1} ${rectHeight - r - 1} 
-                  A ${r} ${r} 0 0 1 ${width - r - 1} ${rectHeight - 1} 
-                  L ${centerX + 8} ${rectHeight - 1} 
-                  L ${centerX} ${height - 1} 
-                  L ${centerX - 8} ${rectHeight - 1} 
-                  L ${r + 1} ${rectHeight - 1} 
-                  A ${r} ${r} 0 0 1 1 ${rectHeight - r - 1} 
-                  L 1 ${r + 1} 
-                  A ${r} ${r} 0 0 1 ${r + 1} 1 Z`.replace(/\n\s+/g, ' ');
-
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
-      <path d="${path}" fill="${markerColor}" stroke="white" stroke-width="2"/>
-      ${rowElements}
-    </svg>`;
-    
-    return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
-  };
   return (
     <div className="app-container">
       {/* Header overlay with Search & Filter */}
@@ -658,6 +660,7 @@ export default function App() {
                         icon={{ url: iconUrl }}
                         onClick={() => handleMarkerClick(pg)}
                         clusterer={clusterer}
+                        optimized={false}
                       />
                     );
                   })}
